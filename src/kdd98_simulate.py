@@ -231,7 +231,7 @@ plt.close()
 plot_validate(orig_D.sum(0),D.sum(0), xlab="Total Donations", ylab="Probability Mass", name="../results/kdd98_total_donations.pdf", 
               n_bins=5, x_range=(0,100), y_range=(0,0.6), font = 20, legend=True, bar_width=3)
 
-record['KL_divergence_total_donations'] = str(KL_validate(D.sum(0), orig_D.sum(0), n_bins=5, x_range=(0,100)))
+record['KL_divergence_total_donations'] = str(KL_validate(orig_D.sum(0), D.sum(0), n_bins=5, x_range=(0,100)))
 record['mean_total_donations_sim'] = str(np.mean(D.sum(0)))
 record['mean_total_donations_orig'] = str(np.mean(orig_D.sum(0)))
 record['std_total_donations_sim'] = str(np.std(D.sum(0)))
