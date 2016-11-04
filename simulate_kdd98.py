@@ -83,6 +83,8 @@ def propagate(data, classifier, regressor, policy, threshold=0.275, periods=12, 
         
         # Avg. Interaction Frequency
         customers[t+1,:,4] = customers[t,:,4] + (actions[t] != 0)
+
+        customers[t+1,:,5:] = customers[t,:,5:]
     
     return customers, actions, donations
 
