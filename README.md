@@ -1,6 +1,6 @@
 # CustomerSim
 
-This repository contains code for `Customer simulation for direct marketing experiments` paper, IEEE DSAA 2016. Authors: Yegor Tkachenko, Mykel J. Kochenderfer, Krzysztof Kluza.
+This repository contains code for `Customer simulation for direct marketing experiments` paper, [IEEE DSAA 2016](http://ieeexplore.ieee.org/document/7796934/). Authors: Yegor Tkachenko, Mykel J. Kochenderfer, Krzysztof Kluza.
 
 # Software
 
