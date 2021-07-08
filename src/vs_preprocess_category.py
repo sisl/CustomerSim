@@ -2,170 +2,175 @@
 
 # https://www.kaggle.com/c/acquire-valued-shoppers-challenge/forums/t/7666/getting-started-data-reduction
 
-from shared_functions import *
+# from shared_functions import *
 
-import pandas as ps
-import json
+import pandas as pd
+# import json
 import numpy as np
 import pickle
-import networkx as nx
-import matplotlib.pyplot as plt
+# import networkx as nx
+# import matplotlib.pyplot as plt
 import os
-import random
+# import random
 import h5py
-
+from tqdm import tqdm
 from datetime import datetime
 
 # EXTRACTING DATA
 
-print('Extracting VS data')
+class Preprocess(object):
+    def __init__(self, folder: str = 'data/compressed'):
+        print("Init preprocess")
+        self.paths = self.get_paths(folder)
 
-folder = '../kaggle_valued_shoppers/'
+    def get_paths(self, folder):
+        return {'loc_offers': os.path.join(folder, "offers.csv.gz"),
+                'loc_train_history': os.path.join(folder, 'trainHistory.csv.gz'),
+                'loc_test_history': os.path.join(folder, "testHistory.csv.gz"),
+                'loc_transactions': os.path.join(folder, "transactions.csv.gz"),
+                'loc_reduced': os.path.join(folder, "reduced_transactions.csv"),
+                'temp_data_cat': os.path.join(folder, "temp_data_cat.h5")}
 
-loc_offers = folder + "offers"
-loc_train_history = folder + 'trainHistory'
-loc_test_history = folder + "testHistory"
-loc_transactions = folder + "transactions"
-loc_reduced = folder + "reduced_transactions.csv"
+    def reduce_data(self):
+        start = datetime.now()
+        #get all categories on offer in a dict
+        offers = pd.read_csv('data/compressed/offers.csv.gz', compression='gzip')
+        #open output file
+        chunksize=1000
+        header = pd.read_csv(self.paths['loc_transactions'], compression='gzip', nrows=0)
+        header.to_csv(self.paths['loc_reduced'], index=False)
+        with pd.read_csv(self.paths['loc_transactions'], compression='gzip', chunksize=chunksize) as reader:
+            for chunk in tqdm(reader):
+                chunk = chunk[chunk['category'].isin(offers['category'].values)]
+                chunk.to_csv(self.paths['loc_reduced'], index=False, header=False, mode='a')
+        print(f"Finished reducing in: {datetime.now() - start}")
 
-def reduce_data(loc_offers, loc_transactions, loc_reduced):
+    def date_to_int(self, date_string):
+        return int(date_string.replace("-", "")[:6])
 
-    start = datetime.now()
-    #get all categories on offer in a dict
-    offers = {}
-    for e, line in enumerate( open(loc_offers) ):
-        offers[ line.split(",")[1] ] = 1
-    #open output file
-    with open(loc_reduced, "wb") as outfile:
-        #go through transactions file and reduce
-        reduced = 0
-        for e, line in enumerate( open(loc_transactions) ):
-            if e == 0:
-                outfile.write( line ) #print header
-            else:
-                #only write when category in offers dict
-                if line.split(",")[3] in offers:
-                    outfile.write( line )
-                    reduced += 1
-            #progress
-            if e % 5000000 == 0:
-                print e, reduced, datetime.now() - start
-    print e, reduced, datetime.now() - start
+    def load_datasets(self):
+        offers = pd.read_csv(self.paths['loc_offers'], compression='gzip')
+        trns = pd.read_csv(self.paths['loc_reduced'])
+        train_history = pd.read_csv(self.paths['loc_train_history'], compression='gzip')
+        test_history = pd.read_csv(self.paths['loc_test_history'], compression='gzip')
+        history = pd.concat([train_history[test_history.columns],test_history])
+        return offers, trns, history
 
+    def format_data(self, trns, history, offers):
+        trns['period'] = trns['date'].apply(self.date_to_int)
+        trns['cacobr'] = trns['category'].apply(str)
 
-reduce_data(loc_offers, loc_transactions, loc_reduced)
+        history['period'] = history['offerdate'].apply(self.date_to_int)
+        offers['cacobr'] = offers['category'].apply(str)
+        return trns, history, offers
 
-# LOADING AND PROCESSING DATA
-print('Loading and processing VS data')
+    def make_full_history(self, history, offers):
+        full_offer_history = history.merge(offers, on="offer", how='left')
+        full_offer_history['offer_ind'] = 1
+        return full_offer_history
 
-def date_to_int(date_string):
-    return int(date_string.replace("-", "")[:6])
-
-offers = ps.read_csv(loc_offers)
-train_history = ps.read_csv(loc_train_history)
-test_history = ps.read_csv(loc_test_history)
-history = ps.concat([train_history[test_history.columns],test_history])
-trns = ps.read_csv(loc_reduced)
-
-trns['period'] = trns['date'].apply(date_to_int)
-history['period'] = history['offerdate'].apply(date_to_int)
-
-trns['cacobr'] = trns['category'].apply(str)
-offers['cacobr'] = offers['category'].apply(str)
-
-full_offer_history = history.merge(offers, on="offer", how='left')
-full_offer_history['offer_ind'] = 1
-
-# dropping returns + strange transactions with 0 purchase quantity
-trns = trns[trns['purchasequantity']>0]
-
-customers = set(trns['id'])
-num_customers = len(customers)
-trns = trns[trns['id'].isin(customers)]
-
-trns_cacobr = set(trns['cacobr'])
-offers_cacobr = set(offers['cacobr'])
-trns_period = set(trns['period'])
-history_period = set(full_offer_history['period'])
-
-data = np.zeros((len(customers),len(trns_period),len(trns_cacobr),10),dtype=np.float32)
-
-ordered_customers = sorted(list(customers))
-ordered_periods = sorted(list(trns_period))
-ordered_cacobr = sorted(list(trns_cacobr))
-
-customer_index = dict(zip(ordered_customers, range(len(ordered_customers))))
-period_index = dict(zip(ordered_periods, range(len(ordered_periods))))
-cacobr_index = dict(zip(ordered_cacobr, range(len(ordered_cacobr))))
-
-purchase_data = ps.pivot_table(trns, values=['purchasequantity','purchaseamount'], index=['id','period','cacobr'], aggfunc=np.sum)
-offer_data = ps.pivot_table(full_offer_history, values=['offer_ind','quantity','offervalue'], index=['id','period','cacobr'], aggfunc=np.sum)
-
-# RECORDING ALL OFFERS
-print('Recording offer data')
-for i in xrange(offer_data.shape[0]):
-    temp = offer_data.iloc[i]
-    if not temp.name[0] in customers:
-        continue
-    ind = (customer_index[temp.name[0]],
-           period_index[temp.name[1]],
-           cacobr_index[temp.name[2]])
+    def sanity_clean(self, trns):
+        # # dropping returns + strange transactions with 0 purchase quantity
+        trns = trns[trns['purchasequantity']>0]
+        customers = set(trns['id'])
+        trns = trns[trns['id'].isin(customers)]
+        return trns
     
-    data[ind][5] = temp.values[0]
-    data[ind][6] = temp.values[2] / temp.values[0]
-    data[ind][7] = temp.values[1] / temp.values[0]
-    if i % 50000 == 0:
-        print i
-
-# RECORDING ALL TRANSACTIONS
-print('Recording transaction data')
-for i in xrange(purchase_data.shape[0]):
-    temp = purchase_data.iloc[i]
-    ind = (customer_index[temp.name[0]],
-           period_index[temp.name[1]],
-           cacobr_index[temp.name[2]])
+    def vectorize(self, trns, offers, full_offer_history):
+        customers = set(trns['id'])
+        trns_cacobr = set(trns['cacobr'])
+        trns_period = set(trns['period'])
+        data = np.zeros((len(customers),len(trns_period),len(trns_cacobr),10), dtype=np.float32)
+        customer_index, period_index, cacobr_index = self.create_indexes(customers, trns_period, trns_cacobr)
+        return data, customer_index, period_index, cacobr_index, customers, trns_period
     
-    data[ind][8] = temp.values[1]
-    data[ind][9] = temp.values[0] / temp.values[1]
-    if i % 200000 == 0:
-        print i
-
-# CALCULATING RFM-I METRICS
-print('Calculating RFM-I metrics')
-for p in xrange(1,len(trns_period)):
+    def create_indexes(self, customers, trns_period, trns_cacobr):
+        ordered_customers = sorted(list(customers))
+        ordered_periods = sorted(list(trns_period))
+        ordered_cacobr = sorted(list(trns_cacobr))
+        customer_index = dict(zip(ordered_customers, range(len(ordered_customers))))
+        period_index = dict(zip(ordered_periods, range(len(ordered_periods))))
+        cacobr_index = dict(zip(ordered_cacobr, range(len(ordered_cacobr))))
+        return customer_index, period_index, cacobr_index
     
-    # update transaction RFM
-    data[:,p,:,0] = (data[:,p-1,:,0] + 1) * (data[:,p-1,:,8] == 0)
-    data[:,p,:,1] = data[:,p-1,:,1] + data[:,p-1,:,8]
-    data[:,p,:,2] = (data[:,p-1,:,1] * data[:,p-1,:,2] + data[:,p-1,:,8] * data[:,p-1,:,9]) / (data[:,p,:,1] + 1*(data[:,p,:,1] == 0))
+    def pivot(self, trns, full_offer_history):
+        purchase_data = pd.pivot_table(trns, values=['purchasequantity', 'purchaseamount'], index=['id','period','cacobr'], aggfunc=np.sum)
+        offer_data = pd.pivot_table(full_offer_history, values=['offer_ind', 'quantity', 'offervalue'], index=['id','period','cacobr'], aggfunc=np.sum)
+        return purchase_data, offer_data
+
+    def record_offers(self, offer_data, customers, customer_index, period_index, cacobr_index, data):
+        for ix, row in tqdm(offer_data.iterrows()):
+            if not row.name[0] in customers:
+                continue
+            ind = (customer_index[row.name[0]],
+                   period_index[row.name[1]],
+                   cacobr_index[row.name[2]])
+            data[ind][5] = row.values[0]
+            data[ind][6] = row.values[2] / row.values[0]
+            data[ind][7] = row.values[1] / row.values[0]
+        return data
     
-    # update offer RF
-    data[:,p,:,3] = (data[:,p-1,:,3] + 1) * (data[:,p-1,:,5] == 0)
-    data[:,p,:,4] = data[:,p-1,:,4] + data[:,p-1,:,5]
+    def record_transactions(self, purchase_data, customer_index, period_index, cacobr_index, data):
+        for ix, row in tqdm(purchase_data.iterrows()):
+            ind = (customer_index[row.name[0]],
+                   period_index[row.name[1]],
+                   cacobr_index[row.name[2]])
+            data[ind][8] = row.values[1]
+            data[ind][9] = row.values[0] / row.values[1]
+        return data
     
-    print p
+    def build_rfmi(self, trns_period, data):
+        for p in tqdm(range(1,len(trns_period))):
+            # update transaction RFM
+            data[:,p,:,0] = (data[:,p-1,:,0] + 1) * (data[:,p-1,:,8] == 0)
+            data[:,p,:,1] = data[:,p-1,:,1] + data[:,p-1,:,8]
+            data[:,p,:,2] = (data[:,p-1,:,1] * data[:,p-1,:,2] + data[:,p-1,:,8] * data[:,p-1,:,9]) / (data[:,p,:,1] + 1*(data[:,p,:,1] == 0))
+            
+            # update offer RF
+            data[:,p,:,3] = (data[:,p-1,:,3] + 1) * (data[:,p-1,:,5] == 0)
+            data[:,p,:,4] = data[:,p-1,:,4] + data[:,p-1,:,5]
+        return data
+    
+    def save_h5(self, data, path):
+        h5f = h5py.File(path, 'w')
+        h5f.create_dataset('temp_data', data=data)
+        h5f.close()
+    
+    def save_pickle(self, obj, name):
+        pickle.dump(obj, open(name, "wb"))
+    
+    def run(self):
+        # self.reduce_data()
+        offers, trns, history = self.load_datasets()
+        trns, history, offers = self.format_data(trns, history, offers)
+        full_offer_history = self.make_full_history(history, offers)
+        trns = self.sanity_clean(trns)
+        data, customer_index, period_index, cacobr_index, customers, trns_period = self.vectorize(trns, offers, full_offer_history)
+        purchase_data, offer_data = self.pivot(trns, full_offer_history)
+        data = self.record_offers(offer_data, customers, customer_index, period_index, cacobr_index, data)
+        data = self.record_transactions(purchase_data, customer_index, period_index, cacobr_index, data)
+        data = self.build_rfmi(trns_period, data)
+        self.save_h5(data, self.paths['temp_data_cat'])
+        prices = self.avg_price_per_category(data)
+        self.save_pickle(prices,'data/compressed/vs_cat_avg_prices.p')
+        
+    def avg_price_per_category(self, data):
+        prices = np.zeros(data.shape[2],dtype=np.float32)
+        for i in range(data.shape[2]):
+            temp = data[:,:,i]
+            prices[i] = temp[temp!=0].mean()
+        return prices
 
-# SAVE DATA
-print('Saving data')
-h5f = h5py.File(folder+'temp_data_cat.h5', 'w')
-h5f.create_dataset('temp_data', data=data)
-h5f.close()
+def load_data(file: str = 'data/compressed/temp_data_cat.h5'):
+    h5f = h5py.File(file, 'r')
+    data = h5f['temp_data'][:]
+    h5f.close()
+    return data
 
-# LOAD DATA
-#h5f = h5py.File(folder + 'temp_data_cat.h5','r')
-#data = h5f['temp_data'][:]
-#h5f.close()
+# columns = ['transaction_recency','transaction_frequency','avg_past_transaction_value',
+#            'offer_recency','offer_frequency','offer_occurred_flag','offer_goods_quantity','offer_value',
+#            'goods_quantity','item_price']
 
-# CALCULATE AVG PRICES PER CATEGORY
-print('Calculating avg. prices')
-prices = np.zeros(data.shape[2],dtype=np.float32)
-for i in range(data.shape[2]):
-    temp = data[:,:,i]
-    prices[i] = temp[temp!=0].mean()
-
-save(prices,folder+'vs_cat_avg_prices.p')
-
-
-columns = ['transaction_recency','transaction_frequency','avg_past_transaction_value',
-           'offer_recency','offer_frequency','offer_occurred_flag','offer_goods_quantity','offer_value',
-           'goods_quantity','item_price']
+if __name__=='__main__':
+    preprocess = Preprocess()
+    preprocess.run()
