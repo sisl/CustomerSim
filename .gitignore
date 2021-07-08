@@ -132,3 +132,11 @@ sympy-plots-for-*.tex/
 # WinEdt
 *.bak
 *.sav
+
+# Files
+*.zip
+*.csv.gz
+*.h5
+*.json
+*.devcontainer
+data/models
