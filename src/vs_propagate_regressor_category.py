@@ -86,10 +86,14 @@ class train_rf(object):
         sample2 = data[index2]
         return sample1, sample2
 
-    def train(self, x_train, y_train):
-        index = self.subsample(x_train, self.subsample_size)
+    def train_rf(self, x_train, y_train):
         self.clf = RandomForestRegressor(n_estimators=100, verbose=4, n_jobs=-1)
-        self.clf = self.clf.fit(x_train[index], y_train[index])
+        self.clf = self.clf.fit(x_train, y_train)
+        
+    def train(self, x_train, y_train, model: str = 'rf'):
+        index = self.subsample(x_train, self.subsample_size)
+        if model == 'rf':
+            self.train_rf(x_train[index], y_train[index])
 
     def get_bootstrap_kl(self, data_true, data_predicted, n_bins, x_range):
         n = data_true.shape[0]
@@ -112,7 +116,7 @@ class train_rf(object):
         '''"Pr(KL(simulated data||original) > KL(bootstrap original||bootstrap original))'''
         simulated_KL, n = self.get_bootstrap_kl(data_true, data_predicted, n_bins, x_range)
         subsampled_KL = []
-        for _ in tqdm(range(n_samples)):
+        for _ in tqdm(range(n_samples), desc='Validating KL'):
             sample1, sample2 = self.subsample_same_data(data_true, n)
             kl, _ = self.get_bootstrap_kl(sample2, sample1, n_bins, x_range)
             subsampled_KL.append(kl)
@@ -156,7 +160,7 @@ class train_rf(object):
     def run(self):
         dl = dataLoader('data/compressed/temp_data_cat.h5')
         x_train, y_train, x_test, y_test = dl.run()
-        self.train(x_train, y_train)
+        self.train(x_train, y_train, 'rf')
         self.validate(x_test, y_test)
         self.save_record('data/compressed/vs_record_regressor.json')
         self.save_model(f'rf_{time()}')
