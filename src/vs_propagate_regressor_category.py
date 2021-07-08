@@ -1,177 +1,166 @@
-
-# VS REGRESSOR
-
-from shared_functions import *
-from net_designs import *
-
-import pandas as ps
 import json
 import numpy as np
-import pickle
-import networkx as nx
 import random
-
-import scipy.stats as sct
-
 from scipy import stats as sc
-
-from sklearn.metrics import roc_curve, auc
-from sklearn.metrics import confusion_matrix
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-
-from keras.callbacks import ModelCheckpoint
-from keras.optimizers import Adam
-
+from joblib import dump, load
 import h5py
 import os
-
+import math
 from copy import deepcopy
+from time import time
+from tqdm.std import tqdm
 
 RANDOM_SEED = 999
-
-record = dict()
-
-# LOAD DATA
-print('Loading data')
-
-h5f = h5py.File('../kaggle_valued_shoppers/temp_data_cat.h5','r')
-data = h5f['temp_data'][:]
-h5f.close()
-
-columns = ['transaction_recency','transaction_frequency','avg_past_transaction_value',
-           'offer_recency','offer_frequency','offer_occurred_flag','offer_goods_quantity','offer_value',
-           'purchased_goods_quantity','purchased_item_price']
-
-cols_X = [0,1,2,3,4,5,6,7]
-cols_Y = 8
-cols_Z = 9
-
 random.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
 
-rand_ind = np.random.permutation(data.shape[0])
-train_customers = rand_ind[:162000]
-val_customers = rand_ind[162000:216000]
-test_customers = rand_ind[216000:]
+class dataLoader(object):
+    def __init__(self, path: str = '../kaggle_valued_shoppers/temp_data_cat.h5'):
+        record = dict()
+        self.h5f = h5py.File(path,'r')
+        self.columns = ['transaction_recency','transaction_frequency','avg_past_transaction_value',
+                        'offer_recency','offer_frequency','offer_occurred_flag','offer_goods_quantity','offer_value',
+                        'purchased_goods_quantity','purchased_item_price']
+        self.cols_X = [0,1,2,3,4,5,6,7]
+        self.cols_Y = 8
+        self.cols_Z = 9
 
-train_data = data[train_customers].T
-val_data = data[val_customers].T
-test_data = data[test_customers].T
+    def read_data(self):
+        data = self.h5f['temp_data'][:]
+        self.h5f.close()
+        return data
 
-del data
+    def split_data(self, data):
+        rand_ind = np.random.permutation(data.shape[0])
+        self.train_customers = rand_ind[:162000]
+        self.val_customers = rand_ind[162000:216000]
+        self.test_customers = rand_ind[216000:]
+        train_data = data[self.train_customers].T
+        val_data = data[self.val_customers].T
+        test_data = data[self.test_customers].T
+        return train_data, val_data, test_data
 
-train_data.shape
+    def split_columns(self, dataSplit):
+        x = dataSplit[self.cols_X].T
+        y = dataSplit[self.cols_Y].T
+        z = dataSplit[self.cols_Z].T
+        return x, y, z
 
-x_train = train_data[cols_X].T
-y_train = train_data[cols_Y].T
-z_train = train_data[cols_Z].T
-del train_data
+    def unique_counts(self, y):
+        unique, counts = np.unique(y[y!=0], return_counts=True)
+        return np.asarray((unique, counts)).T
+    
+    def reshape(self,x, y):
+        # cust * period, cat * variables
+        x = x.reshape(x.shape[0]*x.shape[1],x.shape[2]*x.shape[3])
+        # cust * period, cat * 1 (qty)
+        y = y.reshape(y.shape[0]*y.shape[1],y.shape[2])
+        return x, y
 
-x_val = val_data[cols_X].T
-y_val = val_data[cols_Y].T
-z_val = val_data[cols_Z].T
-del val_data
-
-x_test = test_data[cols_X].T
-y_test = test_data[cols_Y].T
-z_test = test_data[cols_Z].T
-del test_data
-
-unique, counts = np.unique(y_train[y_train!=0], return_counts=True)
-print np.asarray((unique, counts)).T
-
-
-x_train_reshaped = x_train.reshape(x_train.shape[0]*x_train.shape[1],x_train.shape[2]*x_train.shape[3])
-y_train_reshaped = y_train.reshape(y_train.shape[0]*y_train.shape[1],y_train.shape[2])
-
-x_val_reshaped = x_val.reshape(x_val.shape[0]*x_val.shape[1],x_val.shape[2]*x_val.shape[3])
-y_val_reshaped = y_val.reshape(y_val.shape[0]*y_val.shape[1],y_val.shape[2])
-
-x_test_reshaped = x_test.reshape(x_test.shape[0]*x_test.shape[1],x_test.shape[2]*x_test.shape[3])
-y_test_reshaped = y_test.reshape(y_test.shape[0]*y_test.shape[1],y_test.shape[2])
-
-
-# TRAIN NEURAL NET
-print('Training VS regressor neural net')
-
-n_epochs = 10
-batch_size = 500
-file_name="../results/vs_propagation_quantity_best_cat.h5"
-
-# adam = Adam(lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-08)
-
-model = VSRegressor()
-model.compile(loss='mse', optimizer='adagrad')
-
-# Callback to save the best model
-checkpoint = ModelCheckpoint(file_name, monitor='val_loss', save_best_only=True, save_weights_only=True)
-
-# Fit the model
-model.fit(x_train_reshaped, y_train_reshaped, batch_size=batch_size, nb_epoch=n_epochs,
-    verbose=1, callbacks=[checkpoint], validation_data=(x_val_reshaped, y_val_reshaped))
-
-model.load_weights(file_name)
-
-# model.save_weights(file_name, overwrite=True)
-score = model.evaluate(x_test_reshaped, y_test_reshaped, verbose=1)
-print('Test Loss: '+ str(score) )
+    def run(self):
+        data = self.read_data()
+        train_data, val_data, test_data = self.split_data(data)
+        x_train, y_train, z_train = self.split_columns(train_data)
+        x_val, y_val, z_val = self.split_columns(val_data)
+        x_test, y_test, z_test = self.split_columns(test_data)
+        print(self.unique_counts(y_test))
+        x_train, y_train = self.reshape(x_train, y_train)
+        x_test, y_test = self.reshape(x_test, y_test)
+        return x_train, y_train, x_test, y_test
 
 
-# VALIDATE NEURAL NET
+class train_rf(object):
+    def __init__(self, subsample: int = 500000):
+        self.subsample_size = subsample
+        self.record = {}
 
-y_pred_reshaped = model.predict(x_test_reshaped)
-record['MSE_deep_learning'] = str(np.mean((y_test_reshaped - y_pred_reshaped)**2))
+    def subsample(self, x_train, subsample_size):
+        # subsampling to make time of training the random forest manageable
+        return np.random.choice(x_train.shape[0],subsample_size,replace=False)
 
-y_test_dl = y_test_reshaped[y_test_reshaped!=0]
-y_pred_dl = np.rint(y_pred_reshaped)[(y_test_reshaped!=0)&(np.rint(y_pred_reshaped)!=0)].squeeze()
+    def subsample_same_data(self, data, n):
+        index1 = np.random.choice(data.shape[0], n, replace=True)
+        index2 = np.random.choice(data.shape[0], n, replace=True)
+        sample1 = data[index1]
+        sample2 = data[index2]
+        return sample1, sample2
 
-index = np.random.choice(y_test_dl.shape[0],1000,replace=False)
-y_test_dl = y_test_dl[index]
+    def train(self, x_train, y_train):
+        index = self.subsample(x_train, self.subsample_size)
+        self.clf = RandomForestRegressor(n_estimators=100, verbose=4, n_jobs=-1)
+        self.clf = self.clf.fit(x_train[index], y_train[index])
 
-index = np.random.choice(y_pred_dl.shape[0],1000,replace=False)
-y_pred_dl = y_pred_dl[index]
+    def get_bootstrap_kl(self, data_true, data_predicted, n_bins, x_range):
+        n = data_true.shape[0]
+        hist_true, _ = np.histogram(data_true, bins=n_bins, range=x_range)
+        hist_predicted, _ = np.histogram(data_predicted, bins=n_bins, range=x_range)
+        return sc.entropy(hist_true+1,hist_predicted+1), n
 
-record['orig_mean_deep_learning'] = str(np.mean(y_test_dl))
-record['sim_mean_deep_learning'] = str(np.mean(y_pred_dl))
-record['orig_std_deep_learning'] = str(np.std(y_test_dl))
-record['sim_std_deep_learning'] = str(np.std(y_pred_dl))
+    def get_pval(self, simulated_KL, subsampled_KL, n_samples):
+        subsampled_KL = sorted(subsampled_KL)
+        pval = sum( simulated_KL < i for i in subsampled_KL) / float(n_samples)
+        return pval
+    
+    def get_conf_interval(self, n_samples, subsampled_KL):
+        samples = int(math.ceil(n_samples*0.95))
+        conf_interval = (0,subsampled_KL[samples-1])
+        return conf_interval
+    
+    # PERCENTILE KL DIVERGENCE BOOTSTRAP TEST
+    def KL_validate(self, data_true, data_predicted, n_bins, x_range, n_samples=10000):
+        '''"Pr(KL(simulated data||original) > KL(bootstrap original||bootstrap original))'''
+        simulated_KL, n = self.get_bootstrap_kl(data_true, data_predicted, n_bins, x_range)
+        subsampled_KL = []
+        for _ in tqdm(range(n_samples)):
+            sample1, sample2 = self.subsample_same_data(data_true, n)
+            kl, _ = self.get_bootstrap_kl(sample2, sample1, n_bins, x_range)
+            subsampled_KL.append(kl)
+        pval = self.get_pval(simulated_KL, subsampled_KL, n_samples)
+        conf_interval = self.get_conf_interval(n_samples, subsampled_KL)
+        return simulated_KL,conf_interval,pval,n
 
-plot_validate(y_test_dl, y_pred_dl, xlab="Purchase Quantity", ylab="Probability Mass", name="../results/vs_regressor.pdf", 
-              n_bins=12, x_range=(1,12), y_range=(0,0.8), font = 20, legend=True, bar_width=0.5)
+    def loss_functions(self, y_test, y_pred):
+        self.record['MSE_rf'] = str(np.mean((y_test - y_pred)**2))
+    
+    def filter_predictions(self, y_pred, y_test):
+        y_test_new = y_test[y_test!=0]
+        y_pred_new = np.rint(y_pred)[(y_test!=0)&(np.rint(y_pred)!=0)].squeeze()
+        return y_test_new, y_pred_new
+    
+    def sample_predictions(self, y_test_new, y_pred_new):
+        index = self.subsample(y_test_new, 1000)
+        y_test_new = y_test_new[index]
+        index = self.subsample(y_pred_new, 1000)
+        y_pred_new = y_pred_new[index]
+        return y_test_new, y_pred_new
 
-record['KL_divergence_deeplearning'] = str(KL_validate(y_test_dl, y_pred_dl, n_bins=4, x_range=(0,12)))
+    def validate(self, x_test, y_test):
+        y_pred = self.clf.predict(x_test)
+        self.loss_functions(y_test, y_pred)
+        y_test_new, y_pred_new = self.filter_predictions(y_pred, y_test)
+        y_test_new, y_pred_new = self.sample_predictions(y_test_new, y_pred_new)
+        self.record['KL_divergence_rf'] = str(self.KL_validate(y_test_new, y_pred_new, n_bins=4, x_range=(0,12)))
 
+    def save_json(self, obj, name):
+        with open(name, 'w') as outfile:
+            json.dump(obj, outfile)
 
-# TRAIN RANDOM FOREST
-print('Training random forest')
-x_train_rf = x_train.reshape(x_train.shape[0]*x_train.shape[1],x_train.shape[2]*x_train.shape[3])
-y_train_rf = y_train.reshape(y_train.shape[0]*y_train.shape[1],y_train.shape[2])
+    def save_record(self, path = '../results/vs_record_regressor.json'):
+        self.save_json(self.record, path)
+        print(self.record)
+    
+    def save_model(self, path: str):
+        dump(self.clf, path) 
+    
+    def run(self):
+        dl = dataLoader('data/compressed/temp_data_cat.h5')
+        x_train, y_train, x_test, y_test = dl.run()
+        self.train(x_train, y_train)
+        self.validate(x_test, y_test)
+        self.save_record('data/compressed/vs_record_regressor.json')
+        self.save_model(f'rf_{time()}')
 
-index = np.random.choice(x_train_rf.shape[0],500000,replace=False) # subsampling to make time of training the random forest manageable
-
-clf = RandomForestRegressor(n_estimators=100)
-clf = clf.fit(x_train_rf[index], y_train_rf[index])
-
-# VALIDATE RANDOM FOREST
-
-x_test_rf = x_test.reshape(x_test.shape[0]*x_test.shape[1],x_test.shape[2]*x_test.shape[3])
-y_test_rf = y_test.reshape(y_test.shape[0]*y_test.shape[1],y_test.shape[2])
-
-y_pred_rf = clf.predict(x_test_rf)
-
-record['MSE_rf'] = str(np.mean((y_test_rf - y_pred_rf)**2))
-
-y_test_rf_new = y_test_rf[y_test_rf!=0]
-y_pred_rf_new = np.rint(y_pred_rf)[(y_test_rf!=0)&(np.rint(y_pred_rf)!=0)].squeeze()
-
-index = np.random.choice(y_test_rf_new.shape[0],1000,replace=False)
-y_test_rf_new = y_test_rf_new[index]
-
-index = np.random.choice(y_pred_rf_new.shape[0],1000,replace=False)
-y_pred_rf_new = y_pred_rf_new[index]
-
-record['KL_divergence_rf'] = str(KL_validate(y_test_rf_new, y_pred_rf_new, n_bins=4, x_range=(0,12)))
-
-# SAVE RECORD
-save_json(record,'../results/vs_record_regressor.json')
-print(record)
+if __name__=='__main__':
+    preprocess = train_rf()
+    preprocess.run()
