@@ -34,7 +34,15 @@ class Simulator(object):
         self.load_model(model_path)
         
     def random_policy(self, data):
-        return np.random.randint(1,13,data.shape[0])
+        # The company selects:
+        #  the number of offers in each category
+        #  the average min. number of goods required to activate the offer
+        #  and the average offer value.
+        shape = (data.shape[0], data.shape[1],1)
+        offer_prob = np.random.uniform(0, 1, shape)
+        has_offer = 1*(offer_prob<0.05)
+        vector = (has_offer, has_offer, 5*has_offer)
+        return np.concatenate(vector, axis=2)
 
     def init_variables(self, periods, num_actions, data):
         shape = (periods, data.shape[0], data.shape[1])
@@ -103,7 +111,10 @@ class Simulator(object):
         # Initializing arrays to hold output
         customers, actions, quantity, amount = self.init_arrays(periods, num_actions, data)
         for t in tqdm(range(periods), desc="Propagating"):
-            actions[t] = self.select_action(orig_actions[t], policy, customers[t])
+            if orig_actions:
+                actions[t] = self.select_action(orig_actions[t], policy, customers[t])
+            else:
+                actions[t] = self.select_action(None, policy, customers[t])
             # Build a vector of shape [N_customers, (categories * (S+A))]
             inp = self.concat_reshape(customers[t], actions[t])
             # PROPAGATING CUSTOMERS
@@ -148,13 +159,18 @@ class Simulator(object):
         orig_P = np.transpose(orig_P, (1, 0, 2))
         return orig_S, orig_A, orig_Q, orig_P
 
-    def simulate(self, data_path: str = 'data/compressed/temp_data_cat.h5', prices_path: str = 'data/compressed/vs_cat_avg_prices.p'):
+    def simulate(self, data_path: str = 'data/compressed/temp_data_cat.h5', prices_path: str = 'data/compressed/vs_cat_avg_prices.p', action_type: str = 'original'):
         # SIMULATE DATA
         # INPUT IS THE STARTING STATE ARRAY, MODEL, TESTED POLICY [IGNORED BECUASE WE PROVIDE ACTIONS FOR EVERY TIME PERIOD AS ORIG ACTIONS]
         # AVG. PRICES FOR EACH CATEGORY, PERIODS FOR SMULATION, NUMBER OF VARIABLES DESCRIBING THE ACTION, [OPTIONAL] TENSOR OF ORIGINAL ACTIONS 
         data, prices = self.load_data(data_path, prices_path)
         orig_S, orig_A, orig_Q, orig_P = self.split_data(data)
-        S, A, Q, P = self.propagate(orig_S[0], self.regressor, self.random_policy, prices, periods=16, num_actions=3, orig_actions=orig_A)
+        if action_type == 'original':
+            S, A, Q, P = self.propagate(orig_S[0], self.regressor, self.random_policy, prices, periods=16, num_actions=3, orig_actions=orig_A)
+        elif action_type == 'random':
+            S, A, Q, P = self.propagate(orig_S[0], self.regressor, self.random_policy, prices, periods=16, num_actions=3)
+        else:
+            raise Exception(f"Invalid action_type: {action_type}")
         self.record_key_metrics(P, orig_P, S, orig_S)
         self.save_record(f'data/simulation_{time()}_records.json')
 
@@ -343,7 +359,7 @@ class Plots(object):
                            n_bins=5, x_range=(0,20), y_range=(0,0.5), font = 20, legend=True, bar_width=1)
 if __name__=='__main__':
     simulator = Simulator('data/models/rf_1625768815.117125')
-    simulation, original = simulator.simulate()
+    simulation, original = simulator.simulate(action_type='random')
     plots = Plots(simulation, original)
     plots.plot_cumulative_purchases_by_category_over_time()
     plots.plot_histogram_of_endperiod_recency()
